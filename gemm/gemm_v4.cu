@@ -6,14 +6,15 @@
  * v3 version:120.26 ms
  */
 #include <cuda_runtime.h>
-
+#define FLOAT4(x) return (reinterpret_cast<float4 *>(&(x))[0])
 template <int Bm = 128, int Bn = 128, int Bk = 8, int blockSize = 256,
-          int A_BLOCK_X = 8, int B_BLOCK_X = 32, int C_BLOCK_X = 16>
+          int A_BLOCK_X = 8, int B_BLOCK_X = 32, int C_BLOCK_X = 16, int C_WARP_X = 8, int WARP_SIZE = 32>
 __global__ void matrix_multiplication_kernel(const float *A, const float *B, float *C,
                                              int M, int K, int N)
 {
     // 共享内存
-    __shared__ float As[Bm][Bk];
+    // [x] v5 转置 As
+    __shared__ float As[Bk][Bm];
     __shared__ float Bs[Bk][Bn];
 
     const int r0 = blockIdx.y * Bm;
@@ -34,8 +35,22 @@ __global__ void matrix_multiplication_kernel(const float *A, const float *B, flo
 
     // ===================== 计算 C 的映射 =====================
     constexpr int C_BLOCK_Y = blockSize / C_BLOCK_X; // 256 / 16 = 16
-    const int c_row = tid / C_BLOCK_X;               // 0~15
-    const int c_col = tid % C_BLOCK_X;               // 0~15
+
+    // const int c_row = tid / C_BLOCK_X;               // 0~15
+    // const int c_col = tid % C_BLOCK_X;               // 0~15
+
+    // [x] v4 新增，warp 重排
+    constexpr int C_WARP_Y = WARP_SIZE / C_WARP_X;
+    constexpr int C_WARP_DIM_X = C_BLOCK_X / C_WARP_X;
+    int warpId = tid / WARP_SIZE;
+    int laneId = tid % WARP_SIZE;
+
+    int warp_row = warpId / C_WARP_DIM_X;
+    int warp_col = warpId % C_WARP_DIM_X;
+    int lane_row = ((laneId >> 4) << 1) + (laneId & 1);
+    int lane_col = (laneId & 15) >> 1;
+    const int c_row = warp_row * C_WARP_Y + laneY;
+    const int c_col = warp_col * C_WARP_X + laneX;
 
     constexpr int Tm = Bm / C_BLOCK_Y; // 128 / 16 = 8
     constexpr int Tn = Bn / C_BLOCK_X; // 128 / 16 = 8
@@ -62,7 +77,7 @@ __global__ void matrix_multiplication_kernel(const float *A, const float *B, flo
         {
             int r = r0 + a_row + i;
             int c = k_block + a_col;
-            As[a_row + i][a_col] = (r < M && c < K) ? A[r * K + c] : 0.0f;
+            As[a_col][a_row + i] = (r < M && c < K) ? A[r * K + c] : 0.0f;
         }
 
 // 加载 B (横向平铺 - 关键修正点)
@@ -80,16 +95,17 @@ __global__ void matrix_multiplication_kernel(const float *A, const float *B, flo
 #pragma unroll
         for (int p = 0; p < Bk; p++)
         {
-            // [x] 新增 reg
+            // [x] v3 新增 reg
+            // [x] v5 向量化访存
 #pragma unroll
-            for (int i = 0; i < Tm; i++)
+            for (int i = 0; i < Tm / 4; i++)
             {
-                regA[i] = As[c_row + i * C_BLOCK_Y][p];
+                FLOAT4(regA[i * 4]) = FLOAT4(As[p][(c_row + i * C_BLOCK_Y) * 4]);
             }
 #pragma unroll
             for (int j = 0; j < Tn; j++)
             {
-                regB[j] = Bs[p][c_col + j * C_BLOCK_X];
+                FLOAT4(regB[j * 4]) = FLOAT4(Bs[p][(c_col + j * C_BLOCK_X) * 4]);
             }
 #pragma unroll
             for (int i = 0; i < Tm; i++)
@@ -110,11 +126,11 @@ __global__ void matrix_multiplication_kernel(const float *A, const float *B, flo
 #pragma unroll
     for (int i = 0; i < Tm; i++)
     {
-        int r = r0 + c_row + i * C_BLOCK_Y;
+        int r = r0 + 4 * c_row + i / 4 * 4 * C_BLOCK_Y + i % 4;
 #pragma unroll
         for (int j = 0; j < Tn; j++)
         {
-            int c = c0 + c_col + j * C_BLOCK_X;
+            int c = c0 + 4 * c_col + j / 4 * 4 * C_BLOCK_X + i % 4;
             if (r < M && c < N)
             {
                 C[r * N + c] = Ct[i][j];
