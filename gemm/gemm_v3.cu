@@ -1,9 +1,3 @@
-/**
- * base + shared_mem
- * baseline 923.37ms
- * v1 version:717.9 ms
- * v2 version:125.44+ms
- */
 #include <cuda_runtime.h>
 
 template <int Bm = 128, int Bn = 128, int Bk = 8, int blockSize = 256,
@@ -49,7 +43,8 @@ __global__ void matrix_multiplication_kernel(const float *A, const float *B, flo
             Ct[i][j] = 0.0f;
         }
     }
-
+    float regA[Tm];
+    float regB[Tn];
     // ===================== K 维度大循环 =====================
     for (int k_block = 0; k_block < K; k_block += Bk)
     {
@@ -78,6 +73,17 @@ __global__ void matrix_multiplication_kernel(const float *A, const float *B, flo
 #pragma unroll
         for (int p = 0; p < Bk; p++)
         {
+            // [x] 新增 reg
+#pragma unroll
+            for (int i = 0; i < Tm; i++)
+            {
+                regA[i] = As[c_row + i * C_BLOCK_Y][p];
+            }
+#pragma unroll
+            for (int j = 0; j < Tn; j++)
+            {
+                regB[j] = Bs[p][c_col + j * C_BLOCK_X];
+            }
 #pragma unroll
             for (int i = 0; i < Tm; i++)
             {

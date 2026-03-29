@@ -1,5 +1,7 @@
 /**
  * base + shared_mem
+ * baseline 923.37ms
+ * current version:717.9 ms
  */
 #include <cuda_runtime.h>
 
