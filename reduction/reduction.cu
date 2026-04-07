@@ -71,7 +71,7 @@ __global__ void reduction(const float *input, float *output, int N) {
    }
    // 小于 32
    if(tid<32){
-		float val = smem[tid] + smem[tid+32];
+		float val = smem[tid] + smem[tid+32];// 注意这里得用寄存器，而不是直接操作 smem
 		// 32 内 直接 warp shuffle
 		val += __shfl_down_sync(0xffffffff,val,16);
 		val += __shfl_down_sync(0xffffffff,val,8);
